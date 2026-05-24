@@ -1,63 +1,51 @@
 import streamlit as st
 import pandas as pd
 import requests
-import yfinance as yf
-import plotly.graph_objects as go
-from datetime import datetime
 
-st.set_page_config(layout="wide", page_title="Insider Matrix")
+st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. DATA FETCHING ---
+# --- 1. CONFIG ---
+api_key = st.secrets.get("FMP_API_KEY")
+
+# --- 2. DATA ENGINE ---
 @st.cache_data(ttl=3600)
-def get_insider_data():
-    api_key = st.secrets.get("FMP_API_KEY")
-    url = f"https://financialmodelingprep.com/api/v3/insider-trading/latest?limit=100&apikey={api_key}"
-    response = requests.get(url)
-    return pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
-
-df = get_insider_data()
-
-# --- 2. LOGIC: SCORING & ANALYSIS ---
-def analyze_signal(ticker_df, current_price):
-    avg_entry = ticker_df['price'].mean()
-    perf = ((current_price - avg_entry) / avg_entry) * 100
-    verdict = "🟢 Good" if perf > 0 else "🟠 Accumulation"
-    return verdict, perf, avg_entry
+def fetch_insider_data():
+    # THIS IS THE CURRENT STABLE ENDPOINT
+    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=100&apikey={api_key}"
+    
+    try:
+        response = requests.get(url)
+        # Return success with data, or error with text for debugging
+        if response.status_code == 200:
+            return {"status": 200, "data": response.json()}
+        else:
+            return {"status": response.status_code, "text": response.text}
+    except Exception as e:
+        return {"status": "Error", "text": str(e)}
 
 # --- 3. UI ---
-st.title("🎯 Insider Signal Monitor")
-if df.empty:
-    st.error("Data feed unavailable.")
+st.title("🏛️ Insider Matrix Live")
+
+if not api_key:
+    st.error("API Key missing in Secrets. Add it to App Settings > Secrets.")
     st.stop()
 
-# Grouping
-clusters = df.groupby('symbol').filter(lambda x: len(x) >= 2)
-tickers = clusters['symbol'].unique()
+result = fetch_insider_data()
 
-for ticker in tickers:
-    ticker_data = clusters[clusters['symbol'] == ticker]
+# Logic to handle results
+if result["status"] == 200:
+    st.success("Data Feed Active")
+    df = pd.DataFrame(result["data"])
     
-    with st.expander(f"### {ticker} | Insiders: {len(ticker_data)} | Status: Loading..."):
-        # Get live price
-        stock = yf.Ticker(ticker)
-        curr_price = stock.history(period="1d")['Close'].iloc[-1]
-        
-        verdict, perf, avg_entry = analyze_signal(ticker_data, curr_price)
-        
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Live Price", f"${curr_price:.2f}")
-        col2.metric("Performance", f"{perf:.1f}%")
-        col3.write(f"**Verdict:** {verdict}")
-        
-        st.write(f"**Analysis:** {ticker} is showing a cluster of {len(ticker_data)} insiders. Avg entry ${avg_entry:.2f}. Expect { 'bullish momentum' if perf > 0 else 'a bottoming process'}.")
-        
-        # Chart
-        hist = stock.history(period="3mo")
-        fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
-        fig.add_hline(y=avg_entry, line_dash="dash", line_color="yellow", annotation_text="Avg Insider Entry")
-        fig.update_layout(template="plotly_dark", height=300)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Buyer Details
-        st.write("### 👥 Buyer Breakdown")
-        st.dataframe(ticker_data[['reportingName', 'transactionType', 'amount', 'transactionDate']], use_container_width=True)
+    # Simple Cluster View
+    st.subheader("Insider Clusters")
+    clusters = df.groupby('symbol').agg(
+        count=('reportingName', 'nunique'),
+        insiders=('reportingName', lambda x: ', '.join(x.unique()))
+    ).reset_index()
+    
+    st.dataframe(clusters.sort_values(by='count', ascending=False), use_container_width=True)
+else:
+    st.error(f"Connection Failed (Status: {result['status']})")
+    st.warning("The API returned this message. Copy this to your FMP dashboard support to resolve:")
+    st.code(result["text"])
