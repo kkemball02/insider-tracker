@@ -4,85 +4,65 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 
-st.set_page_config(layout="wide", page_title="Congressional Cluster Tracker")
+st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. INITIALIZE DATA ---
+# --- 1. INITIALIZE DATABASE ---
 if 'cluster_db' not in st.session_state:
     st.session_state.cluster_db = pd.DataFrame({
         "ticker": ["SOFI"],
-        "member": ["Noto"],
-        "date": ["2026-05-10"],
-        "entry_price": [7.10],
-        "suggested_buy": [6.90],
-        "risk_pct": [1.5],
-        "result": ["Good"],
-        "analysis": ["Cluster bought at support."]
+        "member": ["Anthony Noto"],
+        "score": [8.5],
+        "move": [4.5],
+        "price": [7.42],
+        "analysis": ["High-density buying across 3 core executives."],
+        "date": [datetime.now().strftime("%Y-%m-%d")]
     })
 
-# --- 2. HELPER FUNCTIONS ---
-@st.cache_data(ttl=3600)
-def get_chart_data(ticker):
-    df = yf.download(ticker, period="3mo", progress=False)
-    # Fix for newer yfinance index issues
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
+# --- 2. UI: SCANNER (THE MATRIX) ---
+st.markdown("### 🏛️ Insider Matrix Live")
+min_cluster = st.slider("Minimum Executives in Cluster", min_value=1, max_value=5, value=2)
 
-# --- 3. UI LAYOUT ---
-st.title("🏛️ Congressional Cluster Tracker")
-tab1, tab2 = st.tabs(["🏛️ Live Scanner", "📚 History & Analytics"])
+# Logic to group and score based on your input
+df = st.session_state.cluster_db
+# This calculates the cluster size dynamically
+clusters = df.groupby('ticker').agg(
+    size=('member', 'count'), 
+    score=('score', 'mean'),
+    move=('move', 'mean'),
+    price=('price', 'mean'),
+    analysis=('analysis', 'first')
+).reset_index()
 
-# --- TAB 1: SCANNER ---
-with tab1:
-    st.markdown("### Add New Trade Data")
+filtered_clusters = clusters[clusters['size'] >= min_cluster]
+
+if st.button("Scan Live Streams", use_container_width=True):
+    if filtered_clusters.empty:
+        st.warning("No clusters found matching your criteria.")
+    
+    for _, item in filtered_clusters.iterrows():
+        badge = "🟢" if item['score'] >= 7.0 else "🟠"
+        
+        with st.container(border=True):
+            st.markdown(f"### {item['ticker']} {badge} Rank: {item['score']}/10")
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Live Price", f"${item['price']:.2f}")
+            col2.metric("Gap Move", f"{item['move']:.1f}%")
+            
+            st.info(f"**Cluster Analysis:** {item['analysis']}")
+            st.markdown(f"**👥 Cluster Size:** {int(item['size'])} Executives")
+
+# --- 3. UI: DATA MANAGEMENT ---
+with st.expander("➕ Add Trade or View History"):
     with st.form("add_trade"):
         col_a, col_b = st.columns(2)
-        new_ticker = col_a.text_input("Ticker").upper()
-        new_member = col_b.text_input("Member Name")
-        col_c, col_d = st.columns(2)
-        entry = col_c.number_input("Entry Price", value=0.0)
-        sug_entry = col_d.number_input("Suggested Entry", value=0.0)
-        submit = st.form_submit_button("Log Trade")
-        
-        if submit and new_ticker:
-            new_row = pd.DataFrame({
-                "ticker": [new_ticker], "member": [new_member], "date": [datetime.now().strftime("%Y-%m-%d")],
-                "entry_price": [entry], "suggested_buy": [sug_entry], "risk_pct": [1.0], 
-                "result": ["Pending"], "analysis": ["New entry"]
-            })
+        ticker = col_a.text_input("Ticker").upper()
+        member = col_b.text_input("Executive/Member")
+        score = st.slider("Assign Confidence Score", 1.0, 10.0, 5.0)
+        analysis = st.text_area("Analysis")
+        if st.form_submit_button("Submit"):
+            new_row = pd.DataFrame({"ticker": [ticker], "member": [member], "score": [score], "move": [0.0], "price": [0.0], "analysis": [analysis], "date": [datetime.now().strftime("%Y-%m-%d")]})
             st.session_state.cluster_db = pd.concat([st.session_state.cluster_db, new_row], ignore_index=True)
-
-    st.divider()
-    
-    # Scanner Logic: Identify Clusters (>1 person per ticker)
-    st.subheader("Detected Clusters")
-    df = st.session_state.cluster_db
-    clusters = df.groupby('ticker').agg(members=('member', lambda x: ', '.join(x.unique())), count=('member', 'nunique'))
-    active_clusters = clusters[clusters['count'] >= 2] # Set to 2 or 3 depending on your strictness
-    
-    if not active_clusters.empty:
-        st.dataframe(active_clusters)
-    else:
-        st.info("No clusters detected yet. Need 2+ officials on a ticker.")
-
-# --- TAB 2: HISTORY & ANALYTICS ---
-with tab2:
-    st.subheader("Edit & Analyze History")
-    # Interactive Table
-    st.session_state.cluster_db = st.data_editor(st.session_state.cluster_db, num_rows="dynamic")
-    
-    st.divider()
-    
-    for _, row in st.session_state.cluster_db.iterrows():
-        with st.expander(f"{row['ticker']} - {row['date']} | Result: {row['result']}"):
-            col1, col2 = st.columns(2)
-            col1.write(f"**Analysis:** {row['analysis']}")
-            col2.write(f"**Members:** {row['member']}")
+            st.rerun()
             
-            # Chart
-            df = get_chart_data(row['ticker'])
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.add_trace(go.Scatter(x=[pd.to_datetime(row['date'])], y=[row['entry_price']], mode='markers', name='Your Entry', marker=dict(size=12, color='green')))
-            fig.add_trace(go.Scatter(x=[pd.to_datetime(row['date'])], y=[row['suggested_buy']], mode='markers', name='Suggested Buy', marker=dict(size=12, color='blue', symbol='x')))
-            fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(st.session_state.cluster_db)
