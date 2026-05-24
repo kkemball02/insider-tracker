@@ -4,38 +4,54 @@ import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. CONFIG ---
-API_KEY = st.secrets.get("FMP_API_KEY")
-
-# --- 2. THE DIAGNOSTIC ENGINE ---
+# --- 1. DATA ENGINE ---
 @st.cache_data(ttl=3600)
-def fetch_data():
-    # This is the specific URL documented for the Free tier "Latest Insider Trading"
-    url = f"https://financialmodelingprep.com/api/v3/insider-trading/latest?limit=100&apikey={API_KEY}"
+def fetch_insider_trades(api_key):
+    # FIXED: Switched to the correct /stable/ endpoint
+    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=100&apikey={api_key}"
     try:
         response = requests.get(url)
-        return {
-            "status": response.status_code,
-            "data": response.json() if response.status_code == 200 else None,
-            "text": response.text # Shows the actual error message
-        }
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"HTTP {response.status_code}", "text": response.text}
     except Exception as e:
-        return {"status": "Error", "text": str(e)}
+        return {"error": str(e)}
+
+# --- 2. CONFIG ---
+api_key = st.secrets.get("FMP_API_KEY")
 
 # --- 3. UI ---
-st.title("🏛️ Insider Matrix Debugger")
+st.markdown("### 🏛️ Insider Matrix Live")
+data = fetch_insider_trades(api_key)
 
-if not API_KEY:
-    st.error("API Key missing in Secrets. Please add it.")
-    st.stop()
+# Tab structure
+tab1, tab2 = st.tabs(["🏛️ Insider Matrix", "🛠️ Data Feed Debug"])
 
-result = fetch_data()
+with tab2:
+    if isinstance(data, dict) and "error" in data:
+        st.error(f"Error: {data['error']}")
+        st.code(data['text'])
+    else:
+        st.write("Data Feed Connected Successfully.")
+        st.json(data[:5]) # Show first 5 items to verify
 
-if result["status"] == 200:
-    st.success("Successfully connected to FMP!")
-    df = pd.DataFrame(result["data"])
-    st.dataframe(df, use_container_width=True)
-else:
-    st.error(f"Connection Failed (Status: {result['status']})")
-    st.code(result["text"]) # This displays the exact error from FMP
-    st.info("Copy the error code above and verify it against your FMP Dashboard.")
+with tab1:
+    if isinstance(data, list) and len(data) > 0:
+        df = pd.DataFrame(data)
+        
+        # Display Summary
+        st.success("Insider Data Feed Active")
+        
+        # Simple Clustering: Group by symbol and count insiders
+        clusters = df.groupby('symbol').agg(
+            count=('reportingName', 'nunique'),
+            insiders=('reportingName', lambda x: ', '.join(x.unique()))
+        ).reset_index()
+        
+        # Show top clusters
+        st.dataframe(clusters.sort_values(by='count', ascending=False), use_container_width=True)
+    elif isinstance(data, dict):
+        st.warning("Data load failed. Check the 'Data Feed Debug' tab for the error code.")
+    else:
+        st.warning("No data found.")
