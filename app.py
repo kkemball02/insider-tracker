@@ -1,61 +1,63 @@
 import streamlit as st
 import pandas as pd
 import requests
+import yfinance as yf
+import plotly.graph_objects as go
+from datetime import datetime
 
-st.set_page_config(page_title="Insider Signal Monitor", layout="wide")
+st.set_page_config(layout="wide", page_title="Insider Matrix")
 
 # --- 1. DATA FETCHING ---
 @st.cache_data(ttl=3600)
-def get_insider_data(api_key):
-    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?limit=100&apikey={api_key}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            return pd.DataFrame(response.json())
-        return pd.DataFrame()
-    except: return pd.DataFrame()
+def get_insider_data():
+    api_key = st.secrets.get("FMP_API_KEY")
+    url = f"https://financialmodelingprep.com/api/v3/insider-trading/latest?limit=100&apikey={api_key}"
+    response = requests.get(url)
+    return pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
 
-# --- 2. LOGIC: SCORING ENGINE ---
-def get_ranked_signals(df):
-    if df.empty: return pd.DataFrame()
-    
-    # Cluster = Group by Ticker
-    clusters = df.groupby('symbol').agg(
-        size=('reportingName', 'nunique'),
-        members=('reportingName', lambda x: ', '.join(x.unique())),
-        last_date=('transactionDate', 'max'),
-        price=('price', 'last')
-    ).reset_index()
-    
-    # Filter for meaningful clusters (2+ people)
-    clusters = clusters[clusters['size'] >= 2]
-    
-    # Score = Size * 2 (capped at 10)
-    clusters['score'] = clusters['size'].apply(lambda x: min(x * 2, 10))
-    
-    # Return sorted by score
-    return clusters.sort_values(by='score', ascending=False)
+df = get_insider_data()
+
+# --- 2. LOGIC: SCORING & ANALYSIS ---
+def analyze_signal(ticker_df, current_price):
+    avg_entry = ticker_df['price'].mean()
+    perf = ((current_price - avg_entry) / avg_entry) * 100
+    verdict = "🟢 Good" if perf > 0 else "🟠 Accumulation"
+    return verdict, perf, avg_entry
 
 # --- 3. UI ---
 st.title("🎯 Insider Signal Monitor")
-api_key = st.secrets.get("FMP_API_KEY")
+if df.empty:
+    st.error("Data feed unavailable.")
+    st.stop()
 
-if st.button("SCAN FOR SIGNALS", type="primary", use_container_width=True):
-    if not api_key:
-        st.error("Add FMP_API_KEY to Streamlit Secrets.")
-    else:
-        with st.spinner("Analyzing market flow..."):
-            df = get_insider_data(api_key)
-            signals = get_ranked_signals(df)
-            
-            if signals.empty:
-                st.warning("No significant clusters detected right now.")
-            else:
-                for _, row in signals.iterrows():
-                    with st.container(border=True):
-                        col1, col2, col3 = st.columns([1, 2, 2])
-                        col1.metric("Score", f"{int(row['score'])}/10")
-                        col2.markdown(f"### {row['symbol']}")
-                        col3.write(f"**Cluster Size:** {row['size']} Insiders")
-                        st.write(f"**Who:** {row['members']}")
-                        st.caption(f"Last Transaction: {row['last_date']}")
+# Grouping
+clusters = df.groupby('symbol').filter(lambda x: len(x) >= 2)
+tickers = clusters['symbol'].unique()
+
+for ticker in tickers:
+    ticker_data = clusters[clusters['symbol'] == ticker]
+    
+    with st.expander(f"### {ticker} | Insiders: {len(ticker_data)} | Status: Loading..."):
+        # Get live price
+        stock = yf.Ticker(ticker)
+        curr_price = stock.history(period="1d")['Close'].iloc[-1]
+        
+        verdict, perf, avg_entry = analyze_signal(ticker_data, curr_price)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Live Price", f"${curr_price:.2f}")
+        col2.metric("Performance", f"{perf:.1f}%")
+        col3.write(f"**Verdict:** {verdict}")
+        
+        st.write(f"**Analysis:** {ticker} is showing a cluster of {len(ticker_data)} insiders. Avg entry ${avg_entry:.2f}. Expect { 'bullish momentum' if perf > 0 else 'a bottoming process'}.")
+        
+        # Chart
+        hist = stock.history(period="3mo")
+        fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'])])
+        fig.add_hline(y=avg_entry, line_dash="dash", line_color="yellow", annotation_text="Avg Insider Entry")
+        fig.update_layout(template="plotly_dark", height=300)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Buyer Details
+        st.write("### 👥 Buyer Breakdown")
+        st.dataframe(ticker_data[['reportingName', 'transactionType', 'amount', 'transactionDate']], use_container_width=True)
