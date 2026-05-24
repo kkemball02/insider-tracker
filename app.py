@@ -1,68 +1,53 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
-import plotly.graph_objects as go
-from datetime import datetime
+import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. INITIALIZE DATABASE ---
-if 'cluster_db' not in st.session_state:
-    st.session_state.cluster_db = pd.DataFrame({
-        "ticker": ["SOFI"],
-        "member": ["Anthony Noto"],
-        "score": [8.5],
-        "move": [4.5],
-        "price": [7.42],
-        "analysis": ["High-density buying across 3 core executives."],
-        "date": [datetime.now().strftime("%Y-%m-%d")]
-    })
+# --- 1. DATA ENGINE ---
+@st.cache_data(ttl=3600)
+def fetch_live_trades(api_key):
+    # FMP House Trades Endpoint
+    url = f"https://financialmodelingprep.com/api/v3/congress-trading?page=0&apikey={api_key}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        df = pd.DataFrame(data)
+        # Rename columns to standard names for processing
+        return df.rename(columns={"symbol": "ticker", "representative": "member"})
+    return pd.DataFrame()
 
-# --- 2. UI: SCANNER (THE MATRIX) ---
-st.markdown("### 🏛️ Insider Matrix Live")
-min_cluster = st.slider("Minimum Executives in Cluster", min_value=1, max_value=5, value=2)
+# --- 2. LOGIC ---
+api_key = st.secrets.get("FMP_API_KEY")
+if not api_key:
+    st.error("Please set FMP_API_KEY in Streamlit Secrets.")
+    st.stop()
 
-# Logic to group and score based on your input
-df = st.session_state.cluster_db
-# This calculates the cluster size dynamically
-clusters = df.groupby('ticker').agg(
-    size=('member', 'count'), 
-    score=('score', 'mean'),
-    move=('move', 'mean'),
-    price=('price', 'mean'),
-    analysis=('analysis', 'first')
-).reset_index()
+df = fetch_live_trades(api_key)
 
-filtered_clusters = clusters[clusters['size'] >= min_cluster]
+if not df.empty:
+    # Grouping logic to detect clusters
+    clusters = df.groupby('ticker').agg(
+        size=('member', 'nunique'),
+        members=('member', lambda x: ', '.join(x.unique())),
+        last_trade=('transactionDate', 'max')
+    ).reset_index()
 
-if st.button("Scan Live Streams", use_container_width=True):
-    if filtered_clusters.empty:
-        st.warning("No clusters found matching your criteria.")
-    
-    for _, item in filtered_clusters.iterrows():
-        badge = "🟢" if item['score'] >= 7.0 else "🟠"
-        
+    # --- 3. UI: LIVE SCANNER ---
+    st.markdown("### 🏛️ Insider Matrix Live")
+    min_cluster = st.slider("Minimum Executives in Cluster", 1, 5, 2)
+    active_clusters = clusters[clusters['size'] >= min_cluster]
+
+    for _, item in active_clusters.iterrows():
         with st.container(border=True):
-            st.markdown(f"### {item['ticker']} {badge} Rank: {item['score']}/10")
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Live Price", f"${item['price']:.2f}")
-            col2.metric("Gap Move", f"{item['move']:.1f}%")
-            
-            st.info(f"**Cluster Analysis:** {item['analysis']}")
-            st.markdown(f"**👥 Cluster Size:** {int(item['size'])} Executives")
+            col1, col2, col3 = st.columns([2, 1, 1])
+            col1.markdown(f"### {item['ticker']}")
+            col2.metric("Cluster Size", f"{item['size']} Officials")
+            col3.write(f"Last Trade: {item['last_trade']}")
+            st.markdown(f"**Members:** {item['members']}")
+else:
+    st.warning("No data found. Check API connection.")
 
-# --- 3. UI: DATA MANAGEMENT ---
-with st.expander("➕ Add Trade or View History"):
-    with st.form("add_trade"):
-        col_a, col_b = st.columns(2)
-        ticker = col_a.text_input("Ticker").upper()
-        member = col_b.text_input("Executive/Member")
-        score = st.slider("Assign Confidence Score", 1.0, 10.0, 5.0)
-        analysis = st.text_area("Analysis")
-        if st.form_submit_button("Submit"):
-            new_row = pd.DataFrame({"ticker": [ticker], "member": [member], "score": [score], "move": [0.0], "price": [0.0], "analysis": [analysis], "date": [datetime.now().strftime("%Y-%m-%d")]})
-            st.session_state.cluster_db = pd.concat([st.session_state.cluster_db, new_row], ignore_index=True)
-            st.rerun()
-            
-    st.dataframe(st.session_state.cluster_db)
+# --- 4. UI: HISTORY ---
+with st.expander("📊 View All Raw Trades"):
+    st.dataframe(df, use_container_width=True)
