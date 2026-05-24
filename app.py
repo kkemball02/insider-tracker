@@ -4,56 +4,38 @@ import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. DATA FETCHING (FREE ENDPOINT) ---
+# --- 1. CONFIG ---
+API_KEY = st.secrets.get("FMP_API_KEY")
+
+# --- 2. THE DIAGNOSTIC ENGINE ---
 @st.cache_data(ttl=3600)
-def fetch_insider_trades(api_key):
-    # This is the FREE endpoint (latest insider trades)
-    url = f"https://financialmodelingprep.com/api/v3/insider-trading?page=0&apikey={api_key}"
+def fetch_data():
+    # This is the specific URL documented for the Free tier "Latest Insider Trading"
+    url = f"https://financialmodelingprep.com/api/v3/insider-trading/latest?limit=100&apikey={API_KEY}"
     try:
         response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            return pd.DataFrame(data)
-        else:
-            return pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+        return {
+            "status": response.status_code,
+            "data": response.json() if response.status_code == 200 else None,
+            "text": response.text # Shows the actual error message
+        }
+    except Exception as e:
+        return {"status": "Error", "text": str(e)}
 
-# --- 2. CONFIG ---
-api_key = st.secrets.get("FMP_API_KEY")
-if not api_key:
-    st.error("Add FMP_API_KEY to Streamlit Secrets.")
+# --- 3. UI ---
+st.title("🏛️ Insider Matrix Debugger")
+
+if not API_KEY:
+    st.error("API Key missing in Secrets. Please add it.")
     st.stop()
 
-# --- 3. LOGIC ---
-st.markdown("### 🏛️ Insider Matrix Live (Free Tier)")
-min_cluster = st.slider("Minimum Insiders in Cluster", 1, 5, 2)
+result = fetch_data()
 
-df = fetch_insider_trades(api_key)
-
-if not df.empty:
-    # Cluster detection: group by ticker and count unique insider names
-    clusters = df.groupby('symbol').agg(
-        size=('reportingName', 'nunique'),
-        members=('reportingName', lambda x: ', '.join(x.unique())),
-        last_transaction=('transactionDate', 'max')
-    ).reset_index()
-
-    active_clusters = clusters[clusters['size'] >= min_cluster]
-
-    # --- UI ---
-    if not active_clusters.empty:
-        for _, item in active_clusters.iterrows():
-            with st.container(border=True):
-                col1, col2 = st.columns([3, 1])
-                col1.markdown(f"### {item['symbol']} | Cluster Size: {item['size']}")
-                col2.write(f"Latest: {item['last_transaction']}")
-                st.markdown(f"**Insiders:** {item['members']}")
-    else:
-        st.warning("No clusters found in the latest 100 trades. Try lowering the slider.")
-else:
-    st.error("Could not fetch data. Check your API key and ensure it is active.")
-
-# --- 4. HISTORY ---
-with st.expander("📊 View All Raw Insider Trades"):
+if result["status"] == 200:
+    st.success("Successfully connected to FMP!")
+    df = pd.DataFrame(result["data"])
     st.dataframe(df, use_container_width=True)
+else:
+    st.error(f"Connection Failed (Status: {result['status']})")
+    st.code(result["text"]) # This displays the exact error from FMP
+    st.info("Copy the error code above and verify it against your FMP Dashboard.")
