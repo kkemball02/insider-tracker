@@ -1,38 +1,43 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
-import plotly.graph_objects as go
+import numpy as np
 
-st.set_page_config(layout="wide")
+# 1. SETUP DATA
+if 'cluster_db' not in st.session_state:
+    st.session_state.cluster_db = pd.DataFrame({
+        "ticker": ["SOFI", "NVDA", "TSLA"],
+        "members": ["Noto, Schwartz", "Pelosi", "Noto, Pelosi, McCarthy"],
+        "result": ["Good", "Bad", "Good"],
+        "days_to_success": [14, 0, 22],
+        "is_cluster": [True, False, True] # True if > 1 member
+    })
 
-# --- DATA: HISTORICAL CLUSTERS ---
-# This dictionary stores your "lessons learned"
-history = [
-    {
-        "ticker": "SOFI", "date": "2026-05-10", "entry_price": 7.10, "exit_price": 7.42, 
-        "risk_pct": 1.0, "result": "Good", "analysis": "Cluster bought at support.",
-        "execs": "Anthony Noto, Harvey Schwartz"
-    }
-]
+# 2. ANALYTICS ENGINE
+def get_stats(df):
+    # Success Rate: % of trades marked 'Good'
+    success = (df[df['result'] == 'Good'].shape[0] / df.shape[0]) * 100
+    avg_time = df['days_to_success'].mean()
+    return success, avg_time
 
-# --- UI: TABS ---
-tab1, tab2 = st.tabs(["Live Scanner", "Trade History & Learning"])
+# 3. UI
+st.title("🏛️ Cluster Alpha Tracker")
 
-with tab2:
-    st.markdown("### 📚 Trade Post-Mortem")
-    for trade in history:
-        with st.expander(f"{trade['ticker']} - {trade['date']} ({trade['result']})"):
-            col1, col2 = st.columns(2)
-            col1.write(f"**Analysis:** {trade['analysis']}")
-            col2.write(f"**Execs:** {trade['execs']}")
-            st.write(f"**Risk Settings Used:** {trade['risk_pct']}% Risk | Entry: ${trade['entry_price']}")
-            
-            # Plot Chart
-            df = yf.download(trade['ticker'], period="3mo", progress=False)
-            fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'])])
-            fig.add_trace(go.Scatter(x=[trade['date']], y=[trade['entry_price']], mode='markers', name='Your Entry', marker=dict(size=12, color='green')))
-            st.plotly_chart(fig, use_container_width=True)
+# Sidebar Filters
+member_filter = st.sidebar.multiselect("Filter by Member", ["Noto", "Schwartz", "Pelosi", "McCarthy"])
+df = st.session_state.cluster_db
 
-with tab1:
-    st.markdown("### 🏛️ Live Scanner")
-    # ... (Keep your existing scanner code here)
+# Filter logic
+if member_filter:
+    df = df[df['members'].apply(lambda x: any(m in x for m in member_filter))]
+
+# 4. DASHBOARD METRICS
+col1, col2 = st.columns(2)
+cluster_stats = get_stats(df[df['is_cluster'] == True])
+solo_stats = get_stats(df[df['is_cluster'] == False])
+
+col1.metric("Cluster Success Rate", f"{cluster_stats[0]:.1f}%", f"Avg {cluster_stats[1]:.1f} days")
+col2.metric("Solo Success Rate", f"{solo_stats[0]:.1f}%", f"Avg {solo_stats[1]:.1f} days")
+
+# 5. DATA EDITOR
+st.subheader("Raw Cluster Data")
+st.session_state.cluster_db = st.data_editor(st.session_state.cluster_db, num_rows="dynamic")
