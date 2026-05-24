@@ -4,50 +4,40 @@ import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. DATA ENGINE ---
+# --- 1. DATA FETCHING ---
 @st.cache_data(ttl=3600)
-def fetch_live_trades(api_key):
-    # FMP House Trades Endpoint
-    url = f"https://financialmodelingprep.com/api/v3/congress-trading?page=0&apikey={api_key}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        data = response.json()
-        df = pd.DataFrame(data)
-        # Rename columns to standard names for processing
-        return df.rename(columns={"symbol": "ticker", "representative": "member"})
-    return pd.DataFrame()
+def fetch_congressional_trades(api_key):
+    # Testing with AAPL to ensure we get data back
+    url = f"https://financialmodelingprep.com/api/v3/congress-trading?symbol=AAPL&apikey={api_key}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            return response.json() # Returns a list
+        else:
+            return {"error": f"HTTP {response.status_code}", "text": response.text}
+    except Exception as e:
+        return {"error": str(e)}
 
-# --- 2. LOGIC ---
+# --- 2. CONFIGURATION ---
 api_key = st.secrets.get("FMP_API_KEY")
 if not api_key:
-    st.error("Please set FMP_API_KEY in Streamlit Secrets.")
+    st.error("FMP_API_KEY not found in Streamlit Secrets.")
     st.stop()
 
-df = fetch_live_trades(api_key)
+# --- 3. UI ---
+st.markdown("### 🏛️ Insider Matrix Live")
+data = fetch_congressional_trades(api_key)
 
-if not df.empty:
-    # Grouping logic to detect clusters
-    clusters = df.groupby('ticker').agg(
-        size=('member', 'nunique'),
-        members=('member', lambda x: ', '.join(x.unique())),
-        last_trade=('transactionDate', 'max')
-    ).reset_index()
+# Tab structure for Analysis and Debugging
+tab1, tab2 = st.tabs(["🏛️ Insider Matrix", "🛠️ Debug Raw Data"])
 
-    # --- 3. UI: LIVE SCANNER ---
-    st.markdown("### 🏛️ Insider Matrix Live")
-    min_cluster = st.slider("Minimum Executives in Cluster", 1, 5, 2)
-    active_clusters = clusters[clusters['size'] >= min_cluster]
+with tab2:
+    st.write("Raw API Response (If empty, your API Key/Endpoint is the issue):")
+    st.json(data)
 
-    for _, item in active_clusters.iterrows():
-        with st.container(border=True):
-            col1, col2, col3 = st.columns([2, 1, 1])
-            col1.markdown(f"### {item['ticker']}")
-            col2.metric("Cluster Size", f"{item['size']} Officials")
-            col3.write(f"Last Trade: {item['last_trade']}")
-            st.markdown(f"**Members:** {item['members']}")
-else:
-    st.warning("No data found. Check API connection.")
-
-# --- 4. UI: HISTORY ---
-with st.expander("📊 View All Raw Trades"):
-    st.dataframe(df, use_container_width=True)
+with tab1:
+    if isinstance(data, list) and len(data) > 0:
+        df = pd.DataFrame(data)
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.warning("No data found for AAPL. Ensure your FMP account has 'Congressional Trading' enabled.")
