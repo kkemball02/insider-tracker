@@ -4,47 +4,56 @@ import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. DATA ENGINE ---
+# --- 1. DATA FETCHING (FREE ENDPOINT) ---
 @st.cache_data(ttl=3600)
-def fetch_congressional_trades(api_key, symbol):
-    url = f"https://financialmodelingprep.com/stable/house-trades?symbol={symbol}&apikey={api_key}"
+def fetch_insider_trades(api_key):
+    # This is the FREE endpoint (latest insider trades)
+    url = f"https://financialmodelingprep.com/api/v3/insider-trading?page=0&apikey={api_key}"
     try:
         response = requests.get(url)
         if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 402:
-            return {"error": "Payment Required (Premium Data)"}
+            data = response.json()
+            return pd.DataFrame(data)
         else:
-            return {"error": f"HTTP {response.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
+            return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 # --- 2. CONFIG ---
 api_key = st.secrets.get("FMP_API_KEY")
+if not api_key:
+    st.error("Add FMP_API_KEY to Streamlit Secrets.")
+    st.stop()
 
-# --- 3. UI ---
-st.markdown("### 🏛️ Insider Matrix Live")
-ticker = st.text_input("Enter Ticker to Scan", value="SOFI").upper()
+# --- 3. LOGIC ---
+st.markdown("### 🏛️ Insider Matrix Live (Free Tier)")
+min_cluster = st.slider("Minimum Insiders in Cluster", 1, 5, 2)
 
-if st.button("Scan Cluster"):
-    if not api_key:
-        st.error("Add FMP_API_KEY to Streamlit Secrets.")
+df = fetch_insider_trades(api_key)
+
+if not df.empty:
+    # Cluster detection: group by ticker and count unique insider names
+    clusters = df.groupby('symbol').agg(
+        size=('reportingName', 'nunique'),
+        members=('reportingName', lambda x: ', '.join(x.unique())),
+        last_transaction=('transactionDate', 'max')
+    ).reset_index()
+
+    active_clusters = clusters[clusters['size'] >= min_cluster]
+
+    # --- UI ---
+    if not active_clusters.empty:
+        for _, item in active_clusters.iterrows():
+            with st.container(border=True):
+                col1, col2 = st.columns([3, 1])
+                col1.markdown(f"### {item['symbol']} | Cluster Size: {item['size']}")
+                col2.write(f"Latest: {item['last_transaction']}")
+                st.markdown(f"**Insiders:** {item['members']}")
     else:
-        data = fetch_congressional_trades(api_key, ticker)
-        
-        if isinstance(data, list) and len(data) > 0:
-            df = pd.DataFrame(data)
-            st.success(f"Trade data found for {ticker}")
-            st.dataframe(df, use_container_width=True)
-        elif isinstance(data, dict) and "error" in data:
-            st.warning(f"Note: {data['error']}. This endpoint requires a paid FMP subscription.")
-            st.info("Tip: You can use the 'History Tab' below to log trades manually.")
-        else:
-            st.warning("No data found for this ticker.")
+        st.warning("No clusters found in the latest 100 trades. Try lowering the slider.")
+else:
+    st.error("Could not fetch data. Check your API key and ensure it is active.")
 
-# --- 4. HISTORY TAB (Manual Fallback) ---
-if 'manual_trades' not in st.session_state:
-    st.session_state.manual_trades = pd.DataFrame(columns=["ticker", "member", "date", "result"])
-
-with st.expander("📊 Manual History / Cluster Tracker (Edit here)"):
-    st.session_state.manual_trades = st.data_editor(st.session_state.manual_trades, num_rows="dynamic", use_container_width=True)
+# --- 4. HISTORY ---
+with st.expander("📊 View All Raw Insider Trades"):
+    st.dataframe(df, use_container_width=True)
