@@ -4,48 +4,61 @@ import requests
 
 st.set_page_config(page_title="Insider Matrix", layout="wide")
 
-# --- 1. CONFIG ---
-api_key = st.secrets.get("FMP_API_KEY")
-
-# --- 2. DATA ENGINE ---
+# --- 1. DATA ENGINE ---
 @st.cache_data(ttl=3600)
-def fetch_insider_data():
-    # THIS IS THE CURRENT STABLE ENDPOINT
-    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=100&apikey={api_key}"
-    
+def fetch_insider_data(api_key):
+    # Using the verified stable endpoint
+    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?limit=100&apikey={api_key}"
     try:
         response = requests.get(url)
-        # Return success with data, or error with text for debugging
         if response.status_code == 200:
-            return {"status": 200, "data": response.json()}
+            return pd.DataFrame(response.json())
         else:
-            return {"status": response.status_code, "text": response.text}
-    except Exception as e:
-        return {"status": "Error", "text": str(e)}
+            return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
-# --- 3. UI ---
-st.title("🏛️ Insider Matrix Live")
+# --- 2. CONFIG ---
+api_key = st.secrets.get("FMP_API_KEY")
 
-if not api_key:
-    st.error("API Key missing in Secrets. Add it to App Settings > Secrets.")
-    st.stop()
+# --- 3. UI & SCORING LOGIC ---
+st.title("🎯 Insider Signal Monitor")
 
-result = fetch_insider_data()
-
-# Logic to handle results
-if result["status"] == 200:
-    st.success("Data Feed Active")
-    df = pd.DataFrame(result["data"])
-    
-    # Simple Cluster View
-    st.subheader("Insider Clusters")
-    clusters = df.groupby('symbol').agg(
-        count=('reportingName', 'nunique'),
-        insiders=('reportingName', lambda x: ', '.join(x.unique()))
-    ).reset_index()
-    
-    st.dataframe(clusters.sort_values(by='count', ascending=False), use_container_width=True)
-else:
-    st.error(f"Connection Failed (Status: {result['status']})")
-    st.warning("The API returned this message. Copy this to your FMP dashboard support to resolve:")
-    st.code(result["text"])
+if st.button("SCAN FOR SIGNALS", type="primary", use_container_width=True):
+    if not api_key:
+        st.error("API Key missing. Add FMP_API_KEY to Streamlit Secrets.")
+    else:
+        with st.spinner("Analyzing market flow..."):
+            df = fetch_insider_data(api_key)
+            
+            if df.empty:
+                st.warning("No data found or connection failed.")
+            else:
+                # Logic: Group by Ticker, count unique insiders
+                clusters = df.groupby('symbol').agg(
+                    size=('reportingName', 'nunique'),
+                    members=('reportingName', lambda x: ', '.join(x.unique())),
+                    last_date=('transactionDate', 'max'),
+                    price=('price', 'last')
+                ).reset_index()
+                
+                # Filter: Only clusters with 2+ people
+                clusters = clusters[clusters['size'] >= 2]
+                
+                # Scoring: Score = Cluster Size * 2 (Capped at 10)
+                clusters['score'] = clusters['size'].apply(lambda x: min(x * 2, 10))
+                
+                # Sort: Best first
+                ranked = clusters.sort_values(by='score', ascending=False)
+                
+                if ranked.empty:
+                    st.info("No significant clusters detected right now.")
+                else:
+                    for _, row in ranked.iterrows():
+                        with st.container(border=True):
+                            col1, col2, col3 = st.columns([1, 2, 2])
+                            col1.metric("Score", f"{int(row['score'])}/10")
+                            col2.markdown(f"### {row['symbol']}")
+                            col3.write(f"**Cluster Size:** {row['size']} Insiders")
+                            st.write(f"**Insiders:** {row['members']}")
+                            st.caption(f"Last Transaction: {row['last_date']} | Price: ${row['price']:.2f}")
