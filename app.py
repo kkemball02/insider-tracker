@@ -84,4 +84,14 @@ with st.spinner("Analyzing live feeds..."):
     clusters = df.groupby('symbol').filter(lambda x: len(x['reportingName'].unique()) >= min_cluster)
     
     if clusters.empty:
-        st.warning(f"No clusters found with {min_cluster} or more unique insiders in the latest batch. Try lowering the '
+        st.warning(f"No clusters found with {min_cluster} or more unique insiders in the latest batch. Try lowering the 'Minimum Insiders' slider in the sidebar.")
+        st.stop()
+
+    ranked_tickers = clusters.groupby('symbol')['reportingName'].nunique().sort_values(ascending=False).index
+
+    for ticker in ranked_tickers:
+        ticker_data = clusters[clusters['symbol'] == ticker].copy()
+        cluster_size = ticker_data['reportingName'].nunique()
+        score = min(cluster_size * 2, 10)
+        
+        price_col =
