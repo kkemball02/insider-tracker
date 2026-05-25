@@ -21,12 +21,13 @@ def calculate_shares(price):
     return int(max_risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
 # --- 2. LIVE DATA ENGINE ---
+# Caching ensures we don't hit the API limit when you move the slider
 @st.cache_data(ttl=3600)
 def fetch_live_signals():
     api_key = st.secrets.get("FMP_API_KEY")
     if not api_key: return pd.DataFrame()
     
-    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?limit=100&apikey={api_key}"
+    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?limit=200&apikey={api_key}"
     try:
         response = requests.get(url)
         return pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
@@ -35,18 +36,12 @@ def fetch_live_signals():
 # --- HELPER: TRANSACTION MAPPER ---
 def get_transaction_label(t_type):
     t = str(t_type).upper()
-    if 'P' in t: return "Buy", "#00FF00", "triangle-up" # Bright Green
-    if 'S' in t: return "Sell", "#FF0000", "triangle-down" # Bright Red
-    return "Grant", "#FFFF00", "circle" # Yellow
+    if 'P' in t: return "Buy", "#00FF00", "triangle-up"
+    if 'S' in t: return "Sell", "#FF0000", "triangle-down"
+    return "Grant", "#FFFF00", "circle"
 
 # --- 3. USER INTERFACE ---
 st.title("🎯 Insider Matrix: Signal & Risk Monitor")
-min_cluster = st.slider("Minimum Insiders in Cluster", 1, 5, 2)
 
-if st.button("SCAN LIVE STREAMS", type="primary", use_container_width=True):
-    if not st.secrets.get("FMP_API_KEY"):
-        st.error("Missing FMP_API_KEY in Streamlit Secrets.")
-        st.stop()
-        
-    with st.spinner("Scanning live feeds, building interactive charts, and calculating risk..."):
-        df = fetch_live_signals()
+if not st.secrets.get("FMP_API_KEY"):
+    st.error("Missing FMP_API_KEY in Streamlit
