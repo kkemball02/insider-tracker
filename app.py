@@ -21,17 +21,21 @@ def calculate_shares(price):
     return int(max_risk_amount / risk_per_share) if risk_per_share > 0 else 0
 
 # --- 2. LIVE DATA ENGINE ---
-# Caching ensures we don't hit the API limit when you move the slider
 @st.cache_data(ttl=3600)
 def fetch_live_signals():
     api_key = st.secrets.get("FMP_API_KEY")
-    if not api_key: return pd.DataFrame()
+    if not api_key: return pd.DataFrame(), "API Key Missing"
     
-    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?limit=200&apikey={api_key}"
+    # FIXED: Reverted to the strict Free Tier limits (page=0, limit=100)
+    url = f"https://financialmodelingprep.com/stable/insider-trading/latest?page=0&limit=100&apikey={api_key}"
     try:
         response = requests.get(url)
-        return pd.DataFrame(response.json()) if response.status_code == 200 else pd.DataFrame()
-    except: return pd.DataFrame()
+        if response.status_code == 200:
+            return pd.DataFrame(response.json()), None
+        else:
+            return pd.DataFrame(), f"HTTP {response.status_code}: {response.text}"
+    except Exception as e: 
+        return pd.DataFrame(), f"Connection Error: {e}"
 
 # --- HELPER: TRANSACTION MAPPER ---
 def get_transaction_label(t_type):
@@ -48,21 +52,24 @@ if not st.secrets.get("FMP_API_KEY"):
     st.stop()
 
 # --- THE REACTIVE SCAN BAR ---
-# Increased max to 20, defaults to 2.
 min_cluster = st.slider("Minimum Insiders in Cluster (Scan Bar)", min_value=1, max_value=20, value=2, step=1)
 
 with st.spinner("Analyzing live feeds..."):
-    df = fetch_live_signals()
+    df, error_msg = fetch_live_signals()
     
     if df.empty:
-        st.error("Live data feed currently unavailable. Check FMP connection.")
+        # If it fails, clear the cache so it doesn't get "stuck" broken for an hour
+        st.cache_data.clear()
+        st.error("Live data feed currently unavailable. The app's cache has been cleared so you can try again.")
+        if error_msg:
+            st.caption(f"**Diagnostic Info for FMP:** {error_msg}")
         st.stop()
 
     # Filter instantly based on the slider
     clusters = df.groupby('symbol').filter(lambda x: len(x['reportingName'].unique()) >= min_cluster)
     
     if clusters.empty:
-        st.warning(f"No clusters found with {min_cluster} or more unique insiders in the latest data batch.")
+        st.warning(f"No clusters found with {min_cluster} or more unique insiders in the latest 100 trades.")
         st.stop()
 
     ranked_tickers = clusters.groupby('symbol')['reportingName'].nunique().sort_values(ascending=False).index
@@ -100,80 +107,4 @@ with st.spinner("Analyzing live feeds..."):
                 st.success(f"**Trade Blueprint:** Buy **{shares_to_buy} shares** (${(shares_to_buy * curr_price):.2f}). Max Risk: ${max_risk_amount:.2f}.")
                 
                 # -- UI: The Interactive Chart & Table --
-                with st.expander(f"📈 Interactive Chart & Buyer Log for {ticker}", expanded=True):
-                    
-                    # BUILD PLOTLY CHART
-                    fig = go.Figure(data=[go.Candlestick(
-                        x=hist.index, open=hist['Open'], high=hist['High'], 
-                        low=hist['Low'], close=hist['Close'], name="Price action"
-                    )])
-                    
-                    # OVERLAY INSIDER TRADES
-                    for _, trade in ticker_data.iterrows():
-                        t_date = pd.to_datetime(trade['transactionDate'])
-                        trade_price = trade.get(price_col, 0)
-                        
-                        if trade_price == 0 or pd.isna(trade_price):
-                            if t_date in hist.index: trade_price = hist.loc[t_date, 'Close']
-                            else: trade_price = curr_price
-                                
-                        label, color, symbol = get_transaction_label(trade['transactionType'])
-                        full_name = trade['reportingName']
-                        shares_traded = trade.get('amount', 0)
-                        total_value = shares_traded * trade_price
-                        
-                        hover_html = (
-                            f"<b>{full_name}</b><br>"
-                            f"Action: {label}<br>"
-                            f"Shares: {shares_traded:,.0f}<br>"
-                            f"Avg Price: ${trade_price:.2f}<br>"
-                            f"Total Value: ${total_value:,.2f}<extra></extra>"
-                        )
-                        
-                        fig.add_trace(go.Scatter(
-                            x=[t_date], y=[trade_price],
-                            mode='markers',
-                            marker=dict(color=color, size=16, symbol=symbol, line=dict(width=2, color='black')),
-                            hovertemplate=hover_html,
-                            name=label
-                        ))
-
-                    fig.update_layout(
-                        template="plotly_dark", margin=dict(l=0, r=0, t=30, b=0),
-                        xaxis_title="Date", yaxis_title="Price",
-                        xaxis=dict(tickformat="%b %d", showgrid=False),
-                        showlegend=False, hovermode="closest"
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # --- DATA TABLE ---
-                    st.markdown("### 📋 Transaction Log")
-                    
-                    display_df = ticker_data[['reportingName', 'transactionType', 'amount', price_col, 'transactionDate']].copy()
-                    display_df['Total Value'] = display_df['amount'] * display_df[price_col]
-                    
-                    display_df['transactionType'] = display_df['transactionType'].apply(lambda x: get_transaction_label(x)[0])
-                    display_df.rename(columns={
-                        'reportingName': 'Insider',
-                        'transactionType': 'Action',
-                        'amount': 'Shares',
-                        price_col: 'Price',
-                        'transactionDate': 'Date'
-                    }, inplace=True)
-                    
-                    st.dataframe(
-                        display_df,
-                        hide_index=True,
-                        use_container_width=True,
-                        column_config={
-                            "Insider": st.column_config.TextColumn("Executive Name", width="medium"),
-                            "Action": st.column_config.TextColumn("Action", width="small"),
-                            "Shares": st.column_config.NumberColumn("Shares", format="%d"),
-                            "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                            "Total Value": st.column_config.NumberColumn("Total Value", format="$%.2f"),
-                            "Date": st.column_config.DateColumn("Date")
-                        }
-                    )
-                    
-            except Exception as e:
-                st.caption(f"Visuals temporarily unavailable for {ticker}. (Log: {e})")
+                with st.expander(f"📈
