@@ -65,46 +65,4 @@ with st.spinner("Analyzing live feeds..."):
             st.caption(f"**Diagnostic Info for FMP:** {error_msg}")
         st.stop()
 
-    # Filter instantly based on the slider
-    clusters = df.groupby('symbol').filter(lambda x: len(x['reportingName'].unique()) >= min_cluster)
-    
-    if clusters.empty:
-        st.warning(f"No clusters found with {min_cluster} or more unique insiders in the latest 100 trades.")
-        st.stop()
-
-    ranked_tickers = clusters.groupby('symbol')['reportingName'].nunique().sort_values(ascending=False).index
-
-    for ticker in ranked_tickers:
-        ticker_data = clusters[clusters['symbol'] == ticker].copy()
-        cluster_size = ticker_data['reportingName'].nunique()
-        score = min(cluster_size * 2, 10)
-        
-        price_col = 'price' if 'price' in ticker_data.columns else 'transactionPrice'
-        avg_entry = ticker_data[price_col].mean() if price_col in ticker_data.columns else 0.00
-        
-        with st.container(border=True):
-            try:
-                # Fetch Price Data
-                stock = yf.Ticker(ticker)
-                hist = stock.history(period="1mo")
-                if hist.empty: raise ValueError("No price data")
-                
-                hist.index = hist.index.tz_localize(None) 
-                curr_price = hist['Close'].iloc[-1]
-                
-                perf = ((curr_price - avg_entry) / avg_entry) * 100 if avg_entry > 0 else 0.0
-                verdict = "🟢 Momentum" if perf > 0 else "🟠 Accumulation (Value)"
-
-                # -- UI: The Header --
-                st.markdown(f"### {ticker} | Score: {score}/10")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Live Price", f"${curr_price:.2f}")
-                c2.metric("Insider Avg Entry", f"${avg_entry:.2f}")
-                c3.metric("Gap vs Insiders", f"{perf:.1f}%")
-                c4.write(f"**Trend:** {verdict}")
-                
-                shares_to_buy = calculate_shares(curr_price)
-                st.success(f"**Trade Blueprint:** Buy **{shares_to_buy} shares** (${(shares_to_buy * curr_price):.2f}). Max Risk: ${max_risk_amount:.2f}.")
-                
-                # -- UI: The Interactive Chart & Table --
-                with st.expander(f"📈
+    # Filter instantly
